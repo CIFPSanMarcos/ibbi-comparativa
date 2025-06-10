@@ -14,12 +14,26 @@ from utils.get_token import get_token
 DIR_PATH = os.path.dirname(os.path.abspath(__file__))
 LOAD_FROM_CSV = False
 
-def read_token():
-    with open(token_file, "r") as f:
-        token = f.read().strip()
-        if token.startswith("Bearer "):
-            token = token[7:]
-        return token
+def get_token():
+    tb_url = st.secrets["TB_API_URL"]
+    tb_user = st.secrets["TB_USER"]
+    tb_pass = st.secrets["TB_PASS"]
+
+    # 1. Autenticación: obtener JWT token
+    auth_url = f"{tb_url}/api/auth/login"
+    auth_payload = {
+        "username": tb_user,
+        "password": tb_pass
+    }
+
+    auth_response = requests.post(auth_url, json=auth_payload)
+    if auth_response.status_code != 200:
+        print("❌ Error al autenticar:", auth_response.text)
+        exit()
+
+    jwt_token = auth_response.json().get("token")
+    print("🔐 Token obtenido correctamente")
+    return jwt_token
 
 # --- CONFIGURACION INICIAL ---
 st.set_page_config(layout="wide")
@@ -50,13 +64,7 @@ tmp_folder = os.path.join(DIR_PATH, "tmp")
 if not os.path.exists(tmp_folder):
     os.makedirs(tmp_folder)
 
-token_file = os.path.join(DIR_PATH, "../tmp", "token.txt")
-if os.path.exists(token_file):
-    token = read_token()
-else:
-    print("❌ No se encontró el token. Asegúrate de haberlo generado previamente.")
-    get_token()
-    token = read_token()
+token = get_token()
 
 # --- SELECCIÓN DE FECHA ---
 now = datetime.now()
