@@ -9,10 +9,16 @@ import subprocess
 from collections import deque
 from datetime import datetime, timedelta
 from openai import OpenAI
-from utils.get_token import get_token
 
-DIR_PATH = os.path.dirname(os.path.abspath(__file__))
+# Ruta base del proyecto (raíz del repositorio)
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+
+# Ruta a la carpeta 'data'
+DATA_DIR = os.path.join(BASE_DIR, 'data')
+
 LOAD_FROM_CSV = False
+if 'DATA_SOURCE' in st.secrets and st.secrets["DATA_SOURCE"] == "csv":
+    LOAD_FROM_CSV = True
 
 def get_token():
     tb_url = st.secrets["TB_API_URL"]
@@ -35,90 +41,29 @@ def get_token():
     print("🔐 Token obtenido correctamente")
     return jwt_token
 
-# --- CONFIGURACION INICIAL ---
-st.set_page_config(layout="wide")
-st.title("iBBi - Comparativa de Consumo Energético")
-
-# --- VARIABLE A VISUALIZAR ---
-key_map = {
-    "p_total": "energía",
-    "voltaje_LNAvg": "voltaje",
-    "intensidad_Avg_total": "intensidad"
-}
-key_unit_map = {
-    "energía": "kWh",
-    "voltaje": "V",
-    "intensidad": "A"
-}
-range_map = {
-    "Diario": 1,
-    # "Semanal": 7,
-}
-
-# --- CONFIGURACIÓN THINGSBOARD ---
-tb_url = st.secrets["TB_API_URL"]
-tb_url = tb_url if tb_url.endswith("/") else tb_url + "/"
-
-# Obtener token de ThingsBoard
-tmp_folder = os.path.join(DIR_PATH, "tmp")
-if not os.path.exists(tmp_folder):
-    os.makedirs(tmp_folder)
-
-token = get_token()
-
-# --- SELECCIÓN DE FECHA ---
-now = datetime.now()
-today = datetime.now().date()
-yesterday = today - timedelta(days=1)
-
-cola, colb, colc = st.columns([1, 1, 1])
-with cola:
-    selected_date = st.date_input("Selecciona una fecha", value=yesterday, max_value=today)
-with colb:
-    # key = st.selectbox("Variable a visualizar", list(key_map.values()), index=0)
-    key = "energía"
-    # Mapeo inverso de clave
-    src_key = next((k for k, v in key_map.items() if v == key), None)
-    
-    # Selección de rango de comparación
-    range_option = st.selectbox("Rango de comparación", list(range_map.keys()), index=0)
-with colc:
-    st.write("")
-    # LOAD_FROM_CSV = st.checkbox(label="Cargar desde CSV", value=True, help="Si no está marcado, se cargarán los datos desde ThingsBoard. Si está marcado, se cargarán los datos desde archivos CSV locales.")
-
-# --- ZONAS DISPONIBLES ---
-# Mapeo de zonas a nombres
-device_map = {
-    "zonaalta": "Zona Alta",
-    "zonamedia": "Zona Media",
-    "zonabaja": "Zona Baja"
-}
-device_names = device_map.keys()
-# Mapeo de zonas a ids
-device_id_map = {
-    "zonaalta": "3d76ce90-24cc-11f0-93b2-b714401cbb0f",
-    "zonamedia": "73d802b0-24cc-11f0-874c-af5d629c6095",
-    "zonabaja": "1d6c4040-24cb-11f0-93b2-b714401cbb0f"
-}
-
-# --- CARGA DE DATOS ---
-def prepare_dataframe(df, key, name, date):
+def prepare_dataframe(df, key, name, start_date, end_date):
     if "timestamp" not in df.columns:
-        df = df.rename({"ts":"timestamp"}, axis=1)
+        df = df.rename(columns={"ts": "timestamp"})
+
+    # Convertir timestamp a datetime y extraer la fecha
     df["fecha"] = pd.to_datetime(df["timestamp"]).dt.date
-    df = df[df["fecha"] == date]
+
+    # Filtrar por rango de fechas
+    df = df[(df["fecha"] > start_date) & (df["fecha"] <= end_date)]
+    
+    # Selección y renombrado de columnas
     df = df[["timestamp", "fecha", key]]
-    df = df.rename({key:key_map[key]}, axis=1)
-    df['zona'] = name
+    df = df.rename(columns={key: key_map[key]})
+    df["zona"] = name
     return df
 
-def load_data_from_csv(date):
-    print(f"🔄 Cargando datos desde CSV para la fecha {date}...")
+def load_data_from_csv(start_date, end_date):
+    print(f"🔄 Cargando datos desde CSV para el rango {start_date} → {end_date}...")
     df = pd.DataFrame()
     try:
         for name in device_names:
-            df_zone = pd.read_csv("data/ibbi_energia_"+name+"_1h.csv")
-            df_zone = prepare_dataframe(df_zone, src_key, name, date)
+            df_zone = pd.read_csv(os.path.join(DATA_DIR, f"{name}_1h.csv"))
+            df_zone = prepare_dataframe(df_zone, src_key, name, start_date, end_date)
             df = pd.concat([df, df_zone], ignore_index=True)
 
         df = df.sort_values(by=["timestamp", "zona"]).reset_index(drop=True)
@@ -199,12 +144,86 @@ def load_data_from_tb(date):
     except:
         st.error(f"Error al cargar los datos: {e}")
         return pd.DataFrame()
-    
-# Cargar datos desde CSV o ThingsBoard
+
+# --- ZONAS DISPONIBLES ---
+# Mapeo de zonas a nombres
+device_map = {
+    "zonaalta": "Zona Alta",
+    "zonamedia": "Zona Media",
+    "zonabaja": "Zona Baja"
+}
+device_names = device_map.keys()
+# Mapeo de zonas a ids
+device_id_map = {
+    "zonaalta": "3d76ce90-24cc-11f0-93b2-b714401cbb0f",
+    "zonamedia": "73d802b0-24cc-11f0-874c-af5d629c6095",
+    "zonabaja": "1d6c4040-24cb-11f0-93b2-b714401cbb0f"
+}
+
+# --- VARIABLE A VISUALIZAR ---
+key_map = {
+    "p_total": "energía",
+    "voltaje_LNAvg": "voltaje",
+    "intensidad_Avg_total": "intensidad"
+}
+key_unit_map = {
+    "energía": "kWh",
+    "voltaje": "V",
+    "intensidad": "A"
+}
+range_map = {
+    "Diario": 1,
+    "Semanal": 7,
+    "Mensual": 30,
+}
+
+now = datetime.now()
+
+today = datetime.now().date()
 if LOAD_FROM_CSV:
-    df_day = load_data_from_csv(selected_date)
-    df_vs = load_data_from_csv(selected_date - timedelta(days=1))
+    today = datetime(2025, 6, 1)
+# --- INTERFAZ DE STREAMLIT ---
+st.set_page_config(layout="wide")
+st.title("iBBi - Comparativa de Consumo Energético")
+
+cola, colb, colc = st.columns([1, 1, 1])
+with cola:
+    selected_date = st.date_input("Selecciona una fecha", value=today - timedelta(days=1), max_value=today)
+with colb:
+    # key = st.selectbox("Variable a visualizar", list(key_map.values()), index=0)
+    key = "energía"
+    # Mapeo inverso de clave
+    src_key = next((k for k, v in key_map.items() if v == key), None)
+    
+    # Selección de rango de comparación
+    range_option = st.selectbox("Rango de comparación", list(range_map.keys()), index=0)
+    range_days = range_map[range_option]
+    if range_option == "Diario":
+        selected_date_vs = selected_date - timedelta(days=1)
+    elif range_option == "Semanal":
+        selected_date_vs = selected_date - timedelta(weeks=1)
+    else:
+        selected_date_vs = selected_date - timedelta(days=30)
+
+with colc:
+    st.write("")
+    # LOAD_FROM_CSV = st.checkbox(label="Cargar desde CSV", value=True, help="Si no está marcado, se cargarán los datos desde ThingsBoard. Si está marcado, se cargarán los datos desde archivos CSV locales.")
+
+# --- CARGA DE DATOS ---
+if LOAD_FROM_CSV:
+    # Cargar datos desde CSV
+    df_day = load_data_from_csv(selected_date_vs, selected_date)
+    df_vs = load_data_from_csv(selected_date_vs - timedelta(days=range_days), selected_date_vs)
+    if df_day.empty:
+        st.warning("No hay datos disponibles para la fecha seleccionada.")
+        df_vs = pd.DataFrame()  # Asegurarse de que df_vs esté vacío si no hay datos
 else:
+    # Obtener token de ThingsBoard
+    token = get_token()
+    # --- CONFIGURACIÓN THINGSBOARD ---
+    tb_url = st.secrets["TB_API_URL"]
+    tb_url = tb_url if tb_url.endswith("/") else tb_url + "/"
+    # Cargar datos desde ThingsBoard
     df_day = load_data_from_tb(selected_date)
     df_vs = load_data_from_tb(selected_date - timedelta(days=1))
 
@@ -236,7 +255,7 @@ else:
     with col2:
         # Gráfico de barras
         df_bar = pd.DataFrame({
-            "fecha": [selected_date - timedelta(days=1), selected_date],
+            "fecha": [selected_date_vs, selected_date],
             "total": [total_value_vs, total_value]
         })
         fig_bar = px.bar(
@@ -300,16 +319,26 @@ else:
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
         
+        # definir el nombre del inervalo de comparación
+        if range_option == "Diario":
+            key_string = f"{key} del día"
+            date_string = "día"
+        elif range_option == "Semanal":
+            key_string = f"{key} de la semana"
+            date_string = "semana"
+        else:
+            key_string = f"{key} del mes"
+            date_string = "mes"
         if not df_vs.empty:
             # Generate user input
-            prompt = f"Analiza el consumo de {key} del día {selected_date.strftime('%d/%m/%Y')} y compara con el día anterior. " \
-                    f"El consumo total del día anterior fue de {total_value_vs} kWh y el día seleccionado {total_value} kWh." \
-                    f"El consumo promedio del día anterior fue de {avg_value_vs} kWh y el día seleccionado {avg_value} kWh." \
-                    f"El consumo máximo del día anterior fue de {avg_value_vs} kWh y el día seleccionado {avg_value} kWh." \
+            prompt = f"Analiza el consumo de {key_string} {selected_date.strftime('%d/%m/%Y')} y compara con {date_string} anterior. " \
+                    f"El consumo total de {date_string} anterior fue de {total_value_vs} kWh y {date_string} seleccionado {total_value} kWh." \
+                    f"El consumo promedio de {date_string} anterior fue de {avg_value_vs} kWh y {date_string} seleccionado {avg_value} kWh." \
+                    f"El consumo máximo de {date_string} anterior fue de {avg_value_vs} kWh y {date_string} seleccionado {avg_value} kWh." \
                     f"Solo debes emitir un mensaje de concienciación al alumnado. Si la difrencia es menor de +/-5% emite un mensaje neutro, si es un incremento superior a 5% emite un mensaje negaivo y si se reduce más de 5% uno positivo"
         else:
-            prompt = f"No dispones de datos del dia entorior. Solo analiza el consumo de {key} del día {selected_date.strftime('%d/%m/%Y')}. " \
-                     f"El consumo total del día seleccionado es {total_value} kWh. El promedio es {avg_value} kWh y el máximo es {max_value} kWh a las {hora_max.strftime('%H:%M')}." \
+            prompt = f"No dispones de datos de {date_string} entorior. Solo analiza el consumo de {key_string} {selected_date.strftime('%d/%m/%Y')}. " \
+                     f"El consumo total de {date_string} seleccionado es {total_value} kWh. El promedio es {avg_value} kWh y el máximo es {max_value} kWh a las {hora_max.strftime('%H:%M')}." \
                      f"Se conciso y claro."
 
         if st.button("Generar mensaje"):
