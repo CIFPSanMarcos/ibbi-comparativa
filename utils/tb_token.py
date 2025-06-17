@@ -27,7 +27,7 @@ def get_token():
     print("🔐 Token obtenido correctamente")
 
     # Guardar token en archivo
-    token_file = os.path.join(DIR_PATH, "../../tmp", "token.txt")
+    token_file = os.path.join(DIR_PATH, "../tmp", "token.txt")
     with open(token_file, "w") as f:
         f.write(jwt_token)
         print(f"💾 Token guardado en {token_file}")
