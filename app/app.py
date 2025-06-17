@@ -68,6 +68,7 @@ def load_data_from_csv(start_date, end_date, src_key):
             df = pd.concat([df, df_zone], ignore_index=True)
 
         df = df.sort_values(by=["timestamp", "zona"]).reset_index(drop=True)
+        df["timestamp"] = pd.to_datetime(df['timestamp'])
         return df
     except Exception as e:
         st.error(f"Error al cargar los datos: {e}")
@@ -189,7 +190,8 @@ def query_data_from_influx(client, start_date, end_date, key):
     df = table.to_pandas()
     df = df.rename(columns={"intervalo": "timestamp"})
     df = df.rename(columns={key: key_map[key]})
-    
+    df["fecha"] = pd.to_datetime(df["timestamp"]).dt.date
+
     return df
 
 def load_data_from_influx(start_date, end_date, key):
@@ -291,13 +293,13 @@ if df_day.empty:
 else:
     # Calcular métricas
     # st.dataframe(df_day, use_container_width=True)
-    df_group = df_day.set_index("timestamp").groupby("zona").resample("1H").mean().reset_index()
+    df_group = df_day[["timestamp", "zona", key]].set_index("timestamp").groupby("zona").resample("h").mean().reset_index()
     total_value = df_group[key].sum().round()
     avg_value = df_day[key].mean()
     max_value = df_day[key].max()
     hora_max = pd.to_datetime(df_day[df_day[key] == max_value]["timestamp"].values[0]).strftime('%Y-%m-%d %H:%M')
     if not df_vs.empty:
-        df_vs_group = df_vs.set_index("timestamp").groupby("zona").resample("1H").mean().reset_index()
+        df_vs_group = df_vs[["timestamp", "zona", key]].set_index("timestamp").groupby("zona").resample("h").mean().reset_index()
         total_value_vs = df_vs_group[key].sum().round()
         delta_total_value = total_value - total_value_vs
         avg_value_vs = df_vs[key].mean()
