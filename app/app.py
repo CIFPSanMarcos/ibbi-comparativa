@@ -8,6 +8,7 @@ import os
 import subprocess
 from collections import deque
 from datetime import datetime, timedelta
+from influxdb_client_3 import InfluxDBClient3
 from openai import OpenAI
 
 # Ruta base del proyecto (raíz del repositorio)
@@ -57,7 +58,7 @@ def prepare_dataframe(df, key, name, start_date, end_date):
     df["zona"] = name
     return df
 
-def load_data_from_csv(start_date, end_date):
+def load_data_from_csv(start_date, end_date, src_key):
     print(f"🔄 Cargando datos desde CSV para el rango {start_date} → {end_date}...")
     df = pd.DataFrame()
     try:
@@ -144,6 +145,69 @@ def load_data_from_tb(date):
     except:
         st.error(f"Error al cargar los datos: {e}")
         return pd.DataFrame()
+    
+def get_latest_data_from_influx(client, key):
+    query = f"""SELECT "{key}", "time", "zona"
+        FROM "energia"
+        WHERE
+        "{key}" IS NOT NULL
+        AND "zona" IN ('zonaalta', 'zonabaja', 'zonamedia')
+        ORDER BY time DESC
+        LIMIT 1 """
+    
+    table = client.query(query=query, database="ibbi-influxdb", language='sql')
+
+    # Convert to dataframe
+    df = table.to_pandas().sort_values(by=["time", "zona"])
+    df = df.rename(columns={"time": "timestamp"})
+    return df
+    
+def query_data_from_influx(client, start_date, end_date, key):
+    interval = '1 hour'
+    # if end_date - start_date <= timedelta(days=1):
+    #     interval = '15 minutes'
+    
+    query = f"""SELECT
+        date_bin(INTERVAL '{interval}', time, TIMESTAMP '1970-01-01T00:00:00Z') AS intervalo,
+        zona,
+        avg({key}) AS {key}
+        FROM
+        "energia"
+        WHERE
+        time >= TIMESTAMP '{start_date}'
+        AND time <= TIMESTAMP '{end_date}'
+        AND {key} IS NOT NULL
+        AND zona IN ('zonaalta', 'zonabaja', 'zonamedia')
+        GROUP BY
+        intervalo, zona
+        ORDER BY
+        intervalo, zona """
+    
+    table = client.query(query=query, database="ibbi-influxdb", language='sql')
+
+    # Convert to dataframe
+    df = table.to_pandas()
+    df = df.rename(columns={"intervalo": "timestamp"})
+    df = df.rename(columns={key: key_map[key]})
+    
+    return df
+
+def load_data_from_influx(start_date, end_date, key):
+    # Aquí iría la lógica para cargar datos desde InfluxDB
+    # Por simplicidad, se deja como un placeholder
+    print(f"🔄 Cargando datos desde InfluxDB para el rango {start_date} → {end_date}...")
+    host = st.secrets["INFLUX_HOST"]
+    org = st.secrets["INFLUX_ORG"]
+    token = st.secrets["INFLUX_TOKEN"]
+
+    client = InfluxDBClient3(host=host, token=token, org=org)
+    df = query_data_from_influx(client, start_date, end_date, key)
+    if df is not None:
+         df = df.sort_values(by=["timestamp", "zona"]).reset_index(drop=True)
+         return df
+    else:
+        st.error("No se pudieron cargar los datos desde InfluxDB.")
+        return pd.DataFrame()
 
 # --- ZONAS DISPONIBLES ---
 # Mapeo de zonas a nombres
@@ -207,42 +271,38 @@ with colb:
 
 with colc:
     st.write("")
-    # LOAD_FROM_CSV = st.checkbox(label="Cargar desde CSV", value=True, help="Si no está marcado, se cargarán los datos desde ThingsBoard. Si está marcado, se cargarán los datos desde archivos CSV locales.")
-
+    
 # --- CARGA DE DATOS ---
 if LOAD_FROM_CSV:
     # Cargar datos desde CSV
-    df_day = load_data_from_csv(selected_date_vs, selected_date)
-    df_vs = load_data_from_csv(selected_date_vs - timedelta(days=range_days), selected_date_vs)
+    df_day = load_data_from_csv(selected_date_vs, selected_date, src_key)
+    df_vs = load_data_from_csv(selected_date_vs - timedelta(days=range_days), selected_date_vs, src_key)
     if df_day.empty:
         st.warning("No hay datos disponibles para la fecha seleccionada.")
         df_vs = pd.DataFrame()  # Asegurarse de que df_vs esté vacío si no hay datos
 else:
-    # Obtener token de ThingsBoard
-    token = get_token()
-    # --- CONFIGURACIÓN THINGSBOARD ---
-    tb_url = st.secrets["TB_API_URL"]
-    tb_url = tb_url if tb_url.endswith("/") else tb_url + "/"
-    # Cargar datos desde ThingsBoard
-    df_day = load_data_from_tb(selected_date)
-    df_vs = load_data_from_tb(selected_date - timedelta(days=1))
+    # Cargar datos desde InluxDB
+    df_day = load_data_from_influx(selected_date_vs, selected_date, src_key)
+    df_vs = load_data_from_influx(selected_date_vs - timedelta(days=range_days), selected_date_vs, src_key)
 
+# Verificar si los DataFrames están vacíos
 if df_day.empty:
     st.warning("No hay datos disponibles para la fecha seleccionada.")
 else:
     # Calcular métricas
-    df_group = df_day.groupby("timestamp").agg({key: "sum"}).reset_index()
+    # st.dataframe(df_day, use_container_width=True)
+    df_group = df_day.set_index("timestamp").groupby("zona").resample("1H").mean().reset_index()
     total_value = df_group[key].sum().round()
-    avg_value = df_group[key].mean()
-    max_value = df_group[key].max()
-    hora_max = df_group[df_group[key] == max_value]["timestamp"].values[0]
+    avg_value = df_day[key].mean()
+    max_value = df_day[key].max()
+    hora_max = pd.to_datetime(df_day[df_day[key] == max_value]["timestamp"].values[0]).strftime('%Y-%m-%d %H:%M')
     if not df_vs.empty:
-        df_vs_group = df_vs.groupby("timestamp").agg({key: "sum"}).reset_index()
+        df_vs_group = df_vs.set_index("timestamp").groupby("zona").resample("1H").mean().reset_index()
         total_value_vs = df_vs_group[key].sum().round()
         delta_total_value = total_value - total_value_vs
-        avg_value_vs = df_vs_group[key].mean()
+        avg_value_vs = df_vs[key].mean()
         delta_avg_value = avg_value - avg_value_vs
-        max_value = df_vs_group[key].max()
+        max_value = df_vs[key].max()
     else:
         total_value_vs = 0
         delta_total_value = total_value
@@ -284,7 +344,7 @@ else:
             y=key,
             color="zona",
             markers=True,
-            labels={"timestamp": "Hora", key: key.upper()},
+            labels={"timestamp": "Hora", key: key.capitalize()},
             title=f"{key.capitalize()} horaria",
             color_discrete_sequence=px.colors.qualitative.Set2
         )
